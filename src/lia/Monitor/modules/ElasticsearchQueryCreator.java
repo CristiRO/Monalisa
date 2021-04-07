@@ -21,8 +21,8 @@ import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
 
 public class ElasticsearchQueryCreator {
+	private static final Logger logger = Logger.getLogger(ElasticsearchQueryCreator.class.getCanonicalName());
 	private static final String QUERY_AGGREGATOR_NAME = "load_time_outlier";
-	static final Logger logger = Logger.getLogger(ElasticsearchQueryCreator.class.getCanonicalName());
 	
 	private final HttpClient client = HttpClient.newHttpClient();
 	private final String esEndpoint;
@@ -37,19 +37,13 @@ public class ElasticsearchQueryCreator {
 														Set<Double> percentiles,
 														String index, String field)
 														throws IOException, InterruptedException {
-		logger.info("Constructing the request");
 		final BodyPublisher body = BodyPublishers.ofString(getRequestBody(start, stop, percentiles, field));
-		logger.info("Sending the request");
 		final HttpRequest request = getRequest(body, index);
-		logger.info("Here is the request to be sent " + request.toString());
 		final HttpResponse<String> response = client.send(request, BodyHandlers.ofString());
-		logger.info("Here is the response " + response.body());
 		return processResponse(response.body());
 	}
 	
 	private Map<Double, Double> processResponse(String responseBody) {
-		logger.log(Level.INFO, responseBody);
-
 		final JSONParser parser = new JSONParser();
 		Object parseResult;
 		try {
@@ -64,7 +58,7 @@ public class ElasticsearchQueryCreator {
 		
 		HashMap<Double, Double> res = new HashMap<>();
 		for (String percentile : (Set<String>) values.keySet()) {
-			res.put(Double.parseDouble(percentile), Double.parseDouble((String) values.get(percentile)));
+			res.put(Double.parseDouble(percentile), (Double) values.get(percentile));
 		}
 		
 		return res;

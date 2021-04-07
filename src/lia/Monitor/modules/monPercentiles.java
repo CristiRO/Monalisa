@@ -1,10 +1,8 @@
 package lia.Monitor.modules;
 
 import java.io.IOException;
-import java.net.Socket;
 import java.util.Map;
 import java.util.Set;
-import java.util.Vector;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -19,21 +17,28 @@ import lia.util.DynamicThreadPoll.SchJob;
 import lia.util.ntp.NTPDate;
 
 public class monPercentiles extends SchJob implements MonitoringModule {
+	private static final Logger logger = Logger.getLogger(monPercentiles.class.getName());
 	private MonModuleInfo mmi = null;
     private MNode mn = null;
     
     // Local port forwarding: `ssh -L 9200:alissandra02.cern.ch:9200 cmargine@lxplus.cern.ch`
     
+    // default values for AliEn
+    // localhost, 9200, (50.0; 75.0; 95.0; 99.0; 99.9; 99.99), logstash-old-*, elapsed
+
+    // default values for JAliEn
+    // localhost, 9200, (50.0; 75.0; 95.0; 99.0; 99.9; 99.99), logstash-new-*, duration
+
     private String sHost = "localhost";
     private int    iPort = 9200;
+    private String[] resTypes = {"p50.0", "p75.0", "p95.0", "p99.0", "p99.9", "p99.99" };
+    private Set<Double> percentiles = Set.of(50.0, 75.0, 95.0, 99.0, 99.9, 99.99);
+    private String indexPattern = "logstash-new-*";
+    private String timestampFieldName = "duration";
+
     
-    // parameters: percentiles (but don't remove the defaults)
-    
-    private static final Logger logger = Logger.getLogger(monPercentiles.class.getName());
-    	
 	@Override
 	public MonModuleInfo init(MNode node, String args) {
-		// parse the host and port from node
 		mn = node;
 		
 		mmi = new MonModuleInfo();
@@ -41,25 +46,39 @@ public class monPercentiles extends SchJob implements MonitoringModule {
 		mmi.setState(0);
 		
 		String sError = null;
-		try{
-		    sHost = args;
-		    
-		    if (sHost.indexOf("://") >0 && sHost.indexOf("://") < 10){
-			sHost = sHost.substring(sHost.indexOf("://")+3);
-		    }
-		    
-		    if (sHost.indexOf("/")>0){
-			//sURL  = sHost.substring(sHost.indexOf("/"));
-			sHost = sHost.substring(0, sHost.indexOf("/"));
-		    }
-		    
-		    if (sHost.indexOf(":")>0){	
-			iPort = Integer.parseInt(sHost.substring(sHost.indexOf(":")+1));
-			sHost = sHost.substring(0, sHost.indexOf(":"));
-		    }
-		}
-		catch (Exception e){
-		    sError = e.getMessage();
+		
+		logger.log(Level.INFO, "Here are the unparsed args: " + args);
+		
+		// strip " from the beginning and end of args
+		args = args.strip();
+		args = args.substring(1, args.length() - 1);
+		
+		logger.log(Level.INFO, "Here are the unparsed args after stripping \": " + args);
+		
+		try {
+			String[] argArray = args.split(",");
+			sHost = argArray[0].strip();
+			iPort = Integer.parseInt(argArray[1].strip());
+			
+			String s = argArray[2].trim();
+			s = s.substring(s.indexOf("(") + 1); // start getting the content between brackets
+			s = s.substring(0, s.indexOf(")"));  // end getting the content between brackets
+			String[] percentilesStringArray = s.split(";");
+			Double[] newPercentiles = new Double[percentilesStringArray.length];
+			String[] newResTypes = new String[percentilesStringArray.length];
+			for (int i = 0; i < percentilesStringArray.length; ++i) {
+				String percentile = percentilesStringArray[i].strip();
+				newPercentiles[i] = Double.parseDouble(percentile);
+				newResTypes[i] = "p" + percentile;
+			}
+			resTypes = newResTypes;
+			percentiles = Set.of(newPercentiles);
+			
+			indexPattern = argArray[3].strip();
+			timestampFieldName = argArray[4].strip();
+			
+		} catch (Exception e) {
+			sError = e.getMessage();
 		}
 		
 		if ( sError != null ){
@@ -72,14 +91,22 @@ public class monPercentiles extends SchJob implements MonitoringModule {
 		mmi.lastMeasurement = NTPDate.currentTimeMillis();
 		lLastProcess = mmi.lastMeasurement - 120000; // minus 2 minutes
 		
-		logger.log(Level.INFO, "Percentiles module initiated");
+		logger.log(Level.INFO, "Percentiles module initiated with the following args: " + args);
+		logger.log(Level.INFO, "Parsed host: " + sHost);
+		logger.log(Level.INFO, "Parsed port: " + iPort);
+		String parsedPercentiles = "";
+		for (String type : resTypes) {
+			parsedPercentiles = parsedPercentiles + " " + type;
+		}
+		logger.log(Level.INFO, "Parsed percentiles: " + parsedPercentiles);
+		logger.log(Level.INFO, "Parsed index pattern: " + indexPattern);
+		logger.log(Level.INFO, "Parsed timestamp field name: " + timestampFieldName);
 		
 		return mmi;
 	}
     
 	@Override
 	public String[] ResTypes() {
-		final String[] resTypes = {"p50.0", "p75.0", "p95.0", "p99.0", "p99.9", "p99.99" };
 		return resTypes;
 	}
 	
@@ -106,31 +133,20 @@ public class monPercentiles extends SchJob implements MonitoringModule {
 		er.time        = ls;
 		
 		try {
-			logger.log(Level.INFO, "Percentiles module sending requests");
-			ElasticsearchQueryCreator creator = new ElasticsearchQueryCreator("http://localhost", Integer.toString(iPort));
-			logger.log(Level.INFO, "Created the creator");
+			ElasticsearchQueryCreator creator = new ElasticsearchQueryCreator("http://" + sHost, Integer.toString(iPort));
 			final Map<Double, Double> res;
 			
 			long currentProcess = NTPDate.currentTimeMillis();
-			Set<Double> percentiles = Set.of(50.0, 75.0, 95.0, 99.0, 99.9, 99.99);
-			String index = "logstash-old-*";
-			String field = "elapsed";
-			logger.log(Level.INFO, "Trying to get the result");
-			res = creator.getPercentilesForIndex(Long.toString(lLastProcess), Long.toString(currentProcess), percentiles, index, field);
-			logger.log(Level.INFO, "Got the result! Parsing...");
+			res = creator.getPercentilesForIndex(Long.toString(lLastProcess), Long.toString(currentProcess), percentiles, indexPattern, timestampFieldName);
 			for (Double key : res.keySet()) {
 				er.addSet("p" + key.toString(),res.get(key));
 			}
-			
-			er.addSet("Testing_value", 1.0);
 		}catch (Exception e){
 		    System.err.println("Exception while parsing : "+e+" ( "+e.getMessage()+" )");
 		    e.printStackTrace();
 		}
 		
 		if (er.param_name!=null && er.param_name.length>0){
-			logger.log(Level.INFO, "Sending it to the moon!");
-			System.out.println(er.toString());
 		    return er;
 		}
 		
