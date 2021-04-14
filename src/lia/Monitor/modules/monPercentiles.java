@@ -3,6 +3,7 @@ package lia.Monitor.modules;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
+import java.util.Vector;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -21,7 +22,7 @@ public class monPercentiles extends SchJob implements MonitoringModule {
 	private MonModuleInfo mmi = null;
     private MNode mn = null;
     
-    // Local port forwarding: `ssh -L 9200:alissandra02.cern.ch:9200 cmargine@lxplus.cern.ch`
+    // Local port forwarding: `ssh -L 9200:alissandra02.cern.ch:9200 <user>@lxplus.cern.ch`
     
     // default values for AliEn
     // localhost, 9200, (50.0; 75.0; 95.0; 99.0; 99.9; 99.99), logstash-old-*, elapsed
@@ -35,6 +36,8 @@ public class monPercentiles extends SchJob implements MonitoringModule {
     private Set<Double> percentiles = Set.of(50.0, 75.0, 95.0, 99.0, 99.9, 99.99);
     private String indexPattern = "logstash-new-*";
     private String timestampFieldName = "duration";
+    
+    private ElasticsearchQueryCreator creator;
 
     
 	@Override
@@ -46,21 +49,17 @@ public class monPercentiles extends SchJob implements MonitoringModule {
 		mmi.setState(0);
 		
 		String sError = null;
-		
-		logger.log(Level.INFO, "Here are the unparsed args: " + args);
-		
-		// strip " from the beginning and end of args
+				
+		// strip " from the start and end of args
 		args = args.strip();
 		args = args.substring(1, args.length() - 1);
-		
-		logger.log(Level.INFO, "Here are the unparsed args after stripping \": " + args);
-		
+				
 		try {
 			String[] argArray = args.split(",");
 			sHost = argArray[0].strip();
 			iPort = Integer.parseInt(argArray[1].strip());
 			
-			String s = argArray[2].trim();
+			String s = argArray[2].strip();
 			s = s.substring(s.indexOf("(") + 1); // start getting the content between brackets
 			s = s.substring(0, s.indexOf(")"));  // end getting the content between brackets
 			String[] percentilesStringArray = s.split(";");
@@ -77,6 +76,7 @@ public class monPercentiles extends SchJob implements MonitoringModule {
 			indexPattern = argArray[3].strip();
 			timestampFieldName = argArray[4].strip();
 			
+			creator = new ElasticsearchQueryCreator("http://" + sHost, Integer.toString(iPort));
 		} catch (Exception e) {
 			sError = e.getMessage();
 		}
@@ -91,14 +91,9 @@ public class monPercentiles extends SchJob implements MonitoringModule {
 		mmi.lastMeasurement = NTPDate.currentTimeMillis();
 		lLastProcess = mmi.lastMeasurement - 120000; // minus 2 minutes
 		
-		logger.log(Level.INFO, "Percentiles module initiated with the following args: " + args);
 		logger.log(Level.INFO, "Parsed host: " + sHost);
 		logger.log(Level.INFO, "Parsed port: " + iPort);
-		String parsedPercentiles = "";
-		for (String type : resTypes) {
-			parsedPercentiles = parsedPercentiles + " " + type;
-		}
-		logger.log(Level.INFO, "Parsed percentiles: " + parsedPercentiles);
+		logger.log(Level.INFO, "Parsed percentiles: " + String.join(" ", resTypes));
 		logger.log(Level.INFO, "Parsed index pattern: " + indexPattern);
 		logger.log(Level.INFO, "Parsed timestamp field name: " + timestampFieldName);
 		
@@ -133,13 +128,12 @@ public class monPercentiles extends SchJob implements MonitoringModule {
 		er.time        = ls;
 		
 		try {
-			ElasticsearchQueryCreator creator = new ElasticsearchQueryCreator("http://" + sHost, Integer.toString(iPort));
 			final Map<Double, Double> res;
 			
 			long currentProcess = NTPDate.currentTimeMillis();
 			res = creator.getPercentilesForIndex(Long.toString(lLastProcess), Long.toString(currentProcess), percentiles, indexPattern, timestampFieldName);
 			for (Double key : res.keySet()) {
-				er.addSet("p" + key.toString(),res.get(key));
+				er.addSet("p" + key.toString(), res.get(key));
 			}
 		}catch (Exception e){
 		    System.err.println("Exception while parsing : "+e+" ( "+e.getMessage()+" )");
@@ -147,7 +141,9 @@ public class monPercentiles extends SchJob implements MonitoringModule {
 		}
 		
 		if (er.param_name!=null && er.param_name.length>0){
-		    return er;
+		    Vector<Result> v = new Vector<>();
+		    v.add(er);
+			return v;
 		}
 		
 		return null;
